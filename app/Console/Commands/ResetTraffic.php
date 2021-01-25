@@ -7,6 +7,7 @@ use App\Models\User;
 
 class ResetTraffic extends Command
 {
+    protected $builder;
     /**
      * The name and signature of the console command.
      *
@@ -29,6 +30,8 @@ class ResetTraffic extends Command
     public function __construct()
     {
         parent::__construct();
+        $this->builder = User::where('expired_at', '!=', NULL)
+            ->where('expired_at', '>', time());
     }
 
     /**
@@ -38,36 +41,36 @@ class ResetTraffic extends Command
      */
     public function handle()
     {
-        $user = User::where('expired_at', '!=', NULL)
-            ->where('expired_at', '>', time());
         $resetTrafficMethod = config('v2board.reset_traffic_method', 0);
         switch ((int)$resetTrafficMethod) {
             // 1 a month
             case 0:
-                $this->resetByMonthFirstDay($user);
+                $this->resetByMonthFirstDay();
                 break;
             // expire day
             case 1:
-                $this->resetByExpireDay($user);
+                $this->resetByExpireDay();
                 break;
         }
     }
 
-    private function resetByMonthFirstDay($user):void
+    private function resetByMonthFirstDay():void
     {
+        $builder = $this->builder;
         if ((string)date('d') === '01') {
-            $user->update([
+            $builder->update([
                 'u' => 0,
                 'd' => 0
             ]);
         }
     }
 
-    private function resetByExpireDay($user):void
+    private function resetByExpireDay():void
     {
+        $builder = $this->builder;
         $lastDay = date('d', strtotime('last day of +0 months'));
         $users = [];
-        foreach ($user->get() as $item) {
+        foreach ($builder->get() as $item) {
             $expireDay = date('d', $item->expired_at);
             $today = date('d');
             if ($expireDay === $today) {

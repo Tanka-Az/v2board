@@ -14,17 +14,31 @@ use App\Models\InviteCode;
 use App\Utils\Helper;
 use App\Utils\Dict;
 use App\Utils\CacheKey;
+use ReCaptcha\ReCaptcha;
 
 class AuthController extends Controller
 {
     public function register(AuthRegister $request)
     {
+        if ((int)config('v2board.recaptcha_enable', 0)) {
+            $recaptcha = new ReCaptcha(config('v2board.recaptcha_key'));
+            $recaptchaResp = $recaptcha->verify($request->input('recaptcha_data'));
+            if (!$recaptchaResp->isSuccess()) {
+                abort(500, '验证码有误');
+            }
+        }
         if ((int)config('v2board.email_whitelist_enable', 0)) {
             if (!Helper::emailSuffixVerify(
                 $request->input('email'),
                 config('v2board.email_whitelist_suffix', Dict::EMAIL_WHITELIST_SUFFIX_DEFAULT))
             ) {
                 abort(500, '邮箱后缀不处于白名单中');
+            }
+        }
+        if ((int)config('v2board.email_gmail_limit_enable', 0)) {
+            $prefix = explode('@', $request->input('email'))[0];
+            if (strpos($prefix, '.') !== false || strpos($prefix, '+') !== false) {
+                abort(500, '不支持Gmail别名邮箱');
             }
         }
         if ((int)config('v2board.stop_register', 0)) {
@@ -52,7 +66,7 @@ class AuthController extends Controller
         $user = new User();
         $user->email = $email;
         $user->password = password_hash($password, PASSWORD_DEFAULT);
-        $user->v2ray_uuid = Helper::guid(true);
+        $user->uuid = Helper::guid(true);
         $user->token = Helper::guid();
         if ($request->input('invite_code')) {
             $inviteCode = InviteCode::where('code', $request->input('invite_code'))
@@ -125,6 +139,10 @@ class AuthController extends Controller
             $request->session()->put('is_admin', true);
             $data['is_admin'] = true;
         }
+        if ($user->is_staff) {
+            $request->session()->put('is_staff', true);
+            $data['is_staff'] = true;
+        }
         return response([
             'data' => $data
         ]);
@@ -133,24 +151,17 @@ class AuthController extends Controller
     public function token2Login(Request $request)
     {
         if ($request->input('token')) {
-            $user = User::where('token', $request->input('token'))->first();
-            if (!$user) {
-                return header('Location:' . config('v2board.app_url'));
-            }
-            $code = Helper::guid();
-            $key = 'token2Login_' . $code;
-            Cache::put($key, $user->id, 600);
-            $redirect = '/#/login?verify=' . $code . '&redirect=' . ($request->input('redirect') ? $request->input('redirect') : 'dashboard');
+            $redirect = '/#/login?verify=' . $request->input('token') . '&redirect=' . ($request->input('redirect') ? $request->input('redirect') : 'dashboard');
             if (config('v2board.app_url')) {
                 $location = config('v2board.app_url') . $redirect;
             } else {
                 $location = url($redirect);
             }
-            return header('Location:' . $location);
+            return redirect()->to($location)->send();
         }
 
         if ($request->input('verify')) {
-            $key = 'token2Login_' . $request->input('verify');
+            $key =  CacheKey::get('TEMP_TOKEN', $request->input('verify'));
             $userId = Cache::get($key);
             if (!$userId) {
                 abort(500, '令牌有误');
@@ -172,6 +183,42 @@ class AuthController extends Controller
                 'data' => true
             ]);
         }
+    }
+
+    public function getTempToken(Request $request)
+    {
+        $user = User::where('token', $request->input('token'))->first();
+        if (!$user) {
+            abort(500, '令牌有误');
+        }
+
+        $code = Helper::guid();
+        $key = CacheKey::get('TEMP_TOKEN', $code);
+        Cache::put($key, $user->id, 60);
+        return response([
+            'data' => $code
+        ]);
+    }
+
+    public function getQuickLoginUrl(Request $request)
+    {
+        $user = User::where('token', $request->input('token'))->first();
+        if (!$user) {
+            abort(500, '令牌有误');
+        }
+
+        $code = Helper::guid();
+        $key = CacheKey::get('TEMP_TOKEN', $code);
+        Cache::put($key, $user->id, 60);
+        $redirect = '/#/login?verify=' . $code . '&redirect=' . ($request->input('redirect') ? $request->input('redirect') : 'dashboard');
+        if (config('v2board.app_url')) {
+            $url = config('v2board.app_url') . $redirect;
+        } else {
+            $url = url($redirect);
+        }
+        return response([
+            'data' => $url
+        ]);
     }
 
     public function check(Request $request)

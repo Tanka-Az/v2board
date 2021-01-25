@@ -3,12 +3,12 @@
 namespace App\Http\Controllers\Client;
 
 use App\Http\Controllers\Controller;
+use App\Services\ServerService;
+use App\Services\UserService;
+use App\Utils\Clash;
 use Illuminate\Http\Request;
-use App\Models\User;
-use App\Models\Plan;
 use App\Models\Server;
-use App\Models\Notice;
-use App\Utils\Helper;
+use Symfony\Component\Yaml\Yaml;
 
 class AppController extends Controller
 {
@@ -16,37 +16,71 @@ class AppController extends Controller
     CONST SOCKS_PORT = 10010;
     CONST HTTP_PORT = 10011;
 
-    // TODO: 1.1.1 abolish
-    public function data(Request $request)
+    public function getConfig(Request $request)
     {
+        $servers = [];
         $user = $request->user;
-        $nodes = [];
-        if ($user->plan_id) {
-            $user['plan'] = Plan::find($user->plan_id);
-            if (!$user['plan']) {
-                abort(500, '订阅计划不存在');
+        $userService = new UserService();
+        if ($userService->isAvailable($user)) {
+            $serverService = new ServerService();
+            $servers = $serverService->getAvailableServers($user);
+        }
+        $config = Yaml::parseFile(base_path() . '/resources/rules/app.clash.yaml');
+        $proxy = [];
+        $proxies = [];
+
+        foreach ($servers as $item) {
+            if ($item['type'] === 'shadowsocks') {
+                array_push($proxy, Clash::buildShadowsocks($user['uuid'], $item));
+                array_push($proxies, $item['name']);
             }
-            if ($user->expired_at > time()) {
-                $servers = Server::where('show', 1)
-                    ->orderBy('name')
-                    ->get();
-                foreach ($servers as $item) {
-                    $groupId = json_decode($item['group_id']);
-                    if (in_array($user->group_id, $groupId)) {
-                        array_push($nodes, $item);
-                    }
-                }
+            if ($item['type'] === 'v2ray') {
+                array_push($proxy, Clash::buildVmess($user['uuid'], $item));
+                array_push($proxies, $item['name']);
             }
+            if ($item['type'] === 'trojan') {
+                array_push($proxy, Clash::buildTrojan($user['uuid'], $item));
+                array_push($proxies, $item['name']);
+            }
+        }
+
+        $config['proxies'] = array_merge($config['proxies'] ? $config['proxies'] : [], $proxy);
+        foreach ($config['proxy-groups'] as $k => $v) {
+            $config['proxy-groups'][$k]['proxies'] = array_merge($config['proxy-groups'][$k]['proxies'], $proxies);
+        }
+        die(Yaml::dump($config));
+    }
+
+    public function getVersion(Request $request)
+    {
+        if (strpos($request->header('user-agent'), 'tidalab/4.0.0') !== false
+            || strpos($request->header('user-agent'), 'tunnelab/4.0.0') !== false
+        ) {
+            if (strpos($request->header('user-agent'), 'Win64') !== false) {
+                return response([
+                    'data' => [
+                        'version' => config('v2board.windows_version'),
+                        'download_url' => config('v2board.windows_download_url')
+                    ]
+                ]);
+            } else {
+                return response([
+                    'data' => [
+                        'version' => config('v2board.macos_version'),
+                        'download_url' => config('v2board.macos_download_url')
+                    ]
+                ]);
+            }
+            return;
         }
         return response([
             'data' => [
-                'nodes' => $nodes,
-                'u' => $user->u,
-                'd' => $user->d,
-                'transfer_enable' => $user->transfer_enable,
-                'expired_at' => $user->expired_at,
-                'plan' => isset($user['plan']) ? $user['plan'] : false,
-                'notice' => Notice::orderBy('created_at', 'DESC')->first()
+                'windows_version' => config('v2board.windows_version'),
+                'windows_download_url' => config('v2board.windows_download_url'),
+                'macos_version' => config('v2board.macos_version'),
+                'macos_download_url' => config('v2board.macos_download_url'),
+                'android_version' => config('v2board.android_version'),
+                'android_download_url' => config('v2board.android_download_url')
             ]
         ]);
     }
@@ -74,8 +108,8 @@ class AppController extends Controller
         //other
         $json->outbound->settings->vnext[0]->address = (string)$server->host;
         $json->outbound->settings->vnext[0]->port = (int)$server->port;
-        $json->outbound->settings->vnext[0]->users[0]->id = (string)$user->v2ray_uuid;
-        $json->outbound->settings->vnext[0]->users[0]->alterId = (int)$user->v2ray_alter_id;
+        $json->outbound->settings->vnext[0]->users[0]->id = (string)$user->uuid;
+        $json->outbound->settings->vnext[0]->users[0]->alterId = (int)$server->alter_id;
         $json->outbound->settings->vnext[0]->remark = (string)$server->name;
         $json->outbound->streamSettings->network = $server->network;
         if ($server->networkSettings) {

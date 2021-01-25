@@ -6,17 +6,6 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class PlanSave extends FormRequest
 {
-    CONST RULES = [
-        'name' => 'required',
-        'content' => '',
-        'group_id' => 'required',
-        'transfer_enable' => 'required',
-        'month_price' => 'nullable|integer',
-        'quarter_price' => 'nullable|integer',
-        'half_year_price' => 'nullable|integer',
-        'year_price' => 'nullable|integer',
-        'onetime_price' => 'nullable|integer'
-    ];
     /**
      * Get the validation rules that apply to the request.
      *
@@ -24,7 +13,20 @@ class PlanSave extends FormRequest
      */
     public function rules()
     {
-        return self::RULES;
+        return [
+            'name' => 'required',
+            'content' => '',
+            'group_id' => 'required',
+            'transfer_enable' => 'required',
+            'month_price' => 'nullable|integer',
+            'quarter_price' => 'nullable|integer',
+            'half_year_price' => 'nullable|integer',
+            'year_price' => 'nullable|integer',
+            'two_year_price' => 'nullable|integer',
+            'three_year_price' => 'nullable|integer',
+            'onetime_price' => 'nullable|integer',
+            'reset_price' => 'nullable|integer'
+        ];
     }
 
     public function messages()
@@ -39,7 +41,10 @@ class PlanSave extends FormRequest
             'quarter_price.integer' => '季付金额格式有误',
             'half_year_price.integer' => '半年付金额格式有误',
             'year_price.integer' => '年付金额格式有误',
-            'onetime_price.integer' => '一次性金额有误'
+            'two_year_price.integer' => '两年付金额格式有误',
+            'three_year_price.integer' => '三年付金额格式有误',
+            'onetime_price.integer' => '一次性金额有误',
+            'reset_price.integer' => '流量重置包金额有误'
         ];
     }
 }

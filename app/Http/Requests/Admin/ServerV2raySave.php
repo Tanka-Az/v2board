@@ -4,25 +4,8 @@ namespace App\Http\Requests\Admin;
 
 use Illuminate\Foundation\Http\FormRequest;
 
-class ServerSave extends FormRequest
+class ServerV2raySave extends FormRequest
 {
-    CONST RULES = [
-        'show' => '',
-        'name' => 'required',
-        'group_id' => 'required|array',
-        'parent_id' => 'nullable|integer',
-        'host' => 'required',
-        'port' => 'required',
-        'server_port' => 'required',
-        'tls' => 'required',
-        'tags' => 'nullable|array',
-        'rate' => 'required|numeric',
-        'network' => 'required|in:tcp,kcp,ws,http,domainsocket,quic',
-        'networkSettings' => '',
-        'ruleSettings' => '',
-        'tlsSettings' => '',
-        'dnsSettings' => ''
-    ];
     /**
      * Get the validation rules that apply to the request.
      *
@@ -30,7 +13,24 @@ class ServerSave extends FormRequest
      */
     public function rules()
     {
-        return self::RULES;
+        return [
+            'show' => '',
+            'name' => 'required',
+            'group_id' => 'required|array',
+            'parent_id' => 'nullable|integer',
+            'host' => 'required',
+            'port' => 'required',
+            'server_port' => 'required',
+            'tls' => 'required',
+            'tags' => 'nullable|array',
+            'rate' => 'required|numeric',
+            'alter_id' => 'required|integer',
+            'network' => 'required|in:tcp,kcp,ws,http,domainsocket,quic',
+            'networkSettings' => '',
+            'ruleSettings' => '',
+            'tlsSettings' => '',
+            'dnsSettings' => ''
+        ];
     }
 
     public function messages()

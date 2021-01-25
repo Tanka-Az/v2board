@@ -54,7 +54,6 @@ class UserController extends Controller
                 'last_login_at',
                 'created_at',
                 'banned',
-                'is_admin',
                 'remind_expire',
                 'remind_traffic',
                 'expired_at',
@@ -62,7 +61,8 @@ class UserController extends Controller
                 'commission_balance',
                 'plan_id',
                 'discount',
-                'commission_rate'
+                'commission_rate',
+                'telegram_id'
             ])
             ->first();
         $user['avatar_url'] = 'https://cdn.v2ex.com/gravatar/' . md5($user->email) . '?s=64&d=identicon';
@@ -98,6 +98,7 @@ class UserController extends Controller
             }
         }
         $user['subscribe_url'] = config('v2board.subscribe_url', config('v2board.app_url', env('APP_URL'))) . '/api/v1/client/subscribe?token=' . $user['token'];
+        $user['reset_day'] = $this->getResetDay($user);
         return response([
             'data' => $user
         ]);
@@ -106,7 +107,7 @@ class UserController extends Controller
     public function resetSecurity(Request $request)
     {
         $user = User::find($request->session()->get('id'));
-        $user->v2ray_uuid = Helper::guid(true);
+        $user->uuid = Helper::guid(true);
         $user->token = Helper::guid();
         if (!$user->save()) {
             abort(500, '重置失败');
@@ -136,5 +137,47 @@ class UserController extends Controller
         return response([
             'data' => true
         ]);
+    }
+
+    public function transfer(Request $request)
+    {
+        $user = User::find($request->session()->get('id'));
+        if (!$user) {
+            abort(500, '该用户不存在');
+        }
+        if ($request->input('transfer_amount') <= 0) {
+            abort(500, '参数错误');
+        }
+        if ($request->input('transfer_amount') > $user->commission_balance) {
+            abort(500, '推广佣金余额不足');
+        }
+        $user->commission_balance = $user->commission_balance - $request->input('transfer_amount');
+        $user->balance = $user->balance + $request->input('transfer_amount');
+        if (!$user->save()) {
+            abort(500, '划转失败');
+        }
+        return response([
+            'data' => true
+        ]);
+    }
+
+    private function getResetDay(User $user)
+    {
+        if ($user->expired_at <= time() || $user->expired_at === NULL) return null;
+        $day = date('d', $user->expired_at);
+        $today = date('d');
+        $lastDay = date('d', strtotime('last day of +0 months'));
+
+        if ((int)config('v2board.reset_traffic_method') === 0) {
+            return $lastDay - $today;
+        }
+        if ((int)config('v2board.reset_traffic_method') === 1) {
+            if ((int)$day >= (int)$today) {
+                return $day - $today;
+            } else {
+                return $lastDay - $today + $day;
+            }
+        }
+        return null;
     }
 }

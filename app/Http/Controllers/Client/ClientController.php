@@ -3,6 +3,13 @@
 namespace App\Http\Controllers\Client;
 
 use App\Http\Controllers\Controller;
+use App\Services\ServerService;
+use App\Utils\Clash;
+use App\Utils\QuantumultX;
+use App\Utils\Shadowrocket;
+use App\Utils\Surge;
+use App\Utils\Surfboard;
+use App\Utils\URLSchemes;
 use Illuminate\Http\Request;
 use App\Models\Server;
 use App\Utils\Helper;
@@ -13,216 +20,257 @@ class ClientController extends Controller
 {
     public function subscribe(Request $request)
     {
+        $flag = $request->input('flag')
+            ?? (isset($_SERVER['HTTP_USER_AGENT'])
+                ? $_SERVER['HTTP_USER_AGENT']
+                : '');
+        $flag = strtolower($flag);
         $user = $request->user;
-        $server = [];
         // account not expired and is not banned.
         $userService = new UserService();
         if ($userService->isAvailable($user)) {
-            $servers = Server::where('show', 1)
-                ->orderBy('name')
-                ->get();
-            foreach ($servers as $item) {
-                $groupId = json_decode($item['group_id']);
-                if (in_array($user->group_id, $groupId)) {
-                    array_push($server, $item);
+            $serverService = new ServerService();
+            $servers = $serverService->getAvailableServers($user);
+            if ($flag) {
+                if (strpos($flag, 'quantumult%20x') !== false) {
+                    die($this->quantumultX($user, $servers));
+                }
+                if (strpos($flag, 'quantumult') !== false) {
+                    die($this->quantumult($user, $servers));
+                }
+                if (strpos($flag, 'clash') !== false) {
+                    die($this->clash($user, $servers));
+                }
+                if (strpos($flag, 'surfboard') !== false) {
+                    die($this->surfboard($user, $servers));
+                }
+                if (strpos($flag, 'surge') !== false) {
+                    die($this->surge($user, $servers));
+                }
+                if (strpos($flag, 'shadowrocket') !== false) {
+                    die($this->shadowrocket($user, $servers));
+                }
+                if (strpos($flag, 'shadowsocks') !== false) {
+                    die($this->shaodowsocksSIP008($user, $servers));
                 }
             }
+            die($this->origin($user, $servers));
         }
-        if (isset($_SERVER['HTTP_USER_AGENT'])) {
-            if (strpos($_SERVER['HTTP_USER_AGENT'], 'Quantumult%20X') !== false) {
-                die($this->quantumultX($user, $server));
-            }
-            if (strpos($_SERVER['HTTP_USER_AGENT'], 'Quantumult') !== false) {
-                die($this->quantumult($user, $server));
-            }
-            if (strpos(strtolower($_SERVER['HTTP_USER_AGENT']), 'clash') !== false) {
-                die($this->clash($user, $server));
-            }
-            if (strpos($_SERVER['HTTP_USER_AGENT'], 'Surfboard') !== false) {
-                die($this->surge($user, $server));
-            }
-            if (strpos($_SERVER['HTTP_USER_AGENT'], 'Surge') !== false) {
-                die($this->surge($user, $server));
-            }
-        }
-        die($this->origin($user, $server));
     }
-
-    private function quantumultX($user, $server)
-    {
-        $uri = '';
-        foreach ($server as $item) {
-            $uri .= "vmess=" . $item->host . ":" . $item->port . ", method=none, password=" . $user->v2ray_uuid . ", fast-open=false, udp-relay=false, tag=" . $item->name;
-            if ($item->network == 'ws') {
-                $uri .= ', obfs=' . ($item->tls ? 'wss' : 'ws');
-                if ($item->networkSettings) {
-                    $wsSettings = json_decode($item->networkSettings);
-                    if (isset($wsSettings->path)) $uri .= ', obfs-uri=' . $wsSettings->path;
-                    if (isset($wsSettings->headers->Host)) $uri .= ', obfs-host=' . $wsSettings->headers->Host;
-                }
-            }
-            $uri .= "\r\n";
-        }
-        return base64_encode($uri);
-    }
-
-    private function quantumult($user, $server)
+    // TODO: Ready to stop support
+    private function quantumult($user, $servers = [])
     {
         $uri = '';
         header('subscription-userinfo: upload=' . $user->u . '; download=' . $user->d . ';total=' . $user->transfer_enable);
-        foreach ($server as $item) {
-            $str = '';
-            $str .= $item->name . '= vmess, ' . $item->host . ', ' . $item->port . ', chacha20-ietf-poly1305, "' . $user->v2ray_uuid . '", over-tls=' . ($item->tls ? "true" : "false") . ', certificate=0, group=' . config('v2board.app_name', 'V2Board');
-            if ($item->network === 'ws') {
-                $str .= ', obfs=ws';
-                if ($item->networkSettings) {
-                    $wsSettings = json_decode($item->networkSettings);
-                    if (isset($wsSettings->path)) $str .= ', obfs-path="' . $wsSettings->path . '"';
-                    if (isset($wsSettings->headers->Host)) $str .= ', obfs-header="Host:' . $wsSettings->headers->Host . '"';
+        foreach ($servers as $item) {
+            if ($item['type'] === 'v2ray') {
+                $str = '';
+                $str .= $item['name'] . '= vmess, ' . $item['host'] . ', ' . $item['port'] . ', chacha20-ietf-poly1305, "' . $user['uuid'] . '", over-tls=' . ($item['tls'] ? "true" : "false") . ', certificate=0, group=' . config('v2board.app_name', 'V2Board');
+                if ($item['network'] === 'ws') {
+                    $str .= ', obfs=ws';
+                    if ($item['networkSettings']) {
+                        $wsSettings = json_decode($item['networkSettings'], true);
+                        if (isset($wsSettings['path'])) $str .= ', obfs-path="' . $wsSettings['path'] . '"';
+                        if (isset($wsSettings['headers']['Host'])) $str .= ', obfs-header="Host:' . $wsSettings['headers']['Host'] . '"';
+                    }
                 }
+                $uri .= "vmess://" . base64_encode($str) . "\r\n";
             }
-            $uri .= "vmess://" . base64_encode($str) . "\r\n";
         }
         return base64_encode($uri);
     }
 
-    private function origin($user, $server)
+    private function shadowrocket($user, $servers = [])
     {
         $uri = '';
-        foreach ($server as $item) {
-            $uri .= Helper::buildVmessLink($item, $user);
+        //display remaining traffic and expire date
+        $upload = round($user->u / (1024*1024*1024), 2);
+        $download = round($user->d / (1024*1024*1024), 2);
+        $totalTraffic = round($user->transfer_enable / (1024*1024*1024), 2);
+        $expiredDate = date('Y-m-d', $user->expired_at);
+        $uri .= "STATUS=🚀↑:{$upload}GB,↓:{$download}GB,TOT:{$totalTraffic}GB💡Expires:{$expiredDate}\r\n";
+        foreach ($servers as $item) {
+            if ($item['type'] === 'shadowsocks') {
+                $uri .= Shadowrocket::buildShadowsocks($user['uuid'], $item);
+            }
+            if ($item['type'] === 'v2ray') {
+                $uri .= Shadowrocket::buildVmess($user['uuid'], $item);
+            }
+            if ($item['type'] === 'trojan') {
+                $uri .= Shadowrocket::buildTrojan($user['uuid'], $item);
+            }
         }
         return base64_encode($uri);
     }
 
-    private function surge($user, $server)
+    private function quantumultX($user, $servers = [])
+    {
+        $uri = '';
+        header("subscription-userinfo: upload={$user->u}; download={$user->d}; total={$user->transfer_enable}; expire={$user->expired_at}");
+        foreach ($servers as $item) {
+            if ($item['type'] === 'shadowsocks') {
+                $uri .= QuantumultX::buildShadowsocks($user['uuid'], $item);
+            }
+            if ($item['type'] === 'v2ray') {
+                $uri .= QuantumultX::buildVmess($user['uuid'], $item);
+            }
+            if ($item['type'] === 'trojan') {
+                $uri .= QuantumultX::buildTrojan($user['uuid'], $item);
+            }
+        }
+        return base64_encode($uri);
+    }
+
+    private function origin($user, $servers = [])
+    {
+        $uri = '';
+        foreach ($servers as $item) {
+            if ($item['type'] === 'shadowsocks') {
+                $uri .= URLSchemes::buildShadowsocks($item, $user);
+            }
+            if ($item['type'] === 'v2ray') {
+                $uri .= URLSchemes::buildVmess($item, $user);
+            }
+            if ($item['type'] === 'trojan') {
+                $uri .= URLSchemes::buildTrojan($item, $user);
+            }
+        }
+        return base64_encode($uri);
+    }
+
+    private function shaodowsocksSIP008($user, $servers = [])
+    {
+        $configs = [];
+        $subs = [];
+        $subs['servers'] = [];
+
+        foreach ($servers as $item) {
+            if ($item['type'] === 'shadowsocks') {
+                array_push($configs, URLSchemes::buildShadowsocksSIP008($item, $user));
+            }
+        }
+
+        $subs['version'] = 1;
+        $subs['remark'] = config('v2board.app_name', 'V2Board');
+        $subs['servers'] = array_merge($subs['servers'] ? $subs['servers'] : [], $configs);
+
+        return json_encode($subs, JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT);
+    }
+
+    private function surge($user, $servers = [])
     {
         $proxies = '';
         $proxyGroup = '';
-        foreach ($server as $item) {
-            // [Proxy]
-            $proxies .= $item->name . ' = vmess, ' . $item->host . ', ' . $item->port . ', username=' . $user->v2ray_uuid;
-            if ($item->tls) {
-                $tlsSettings = json_decode($item->tlsSettings);
-                $proxies .= ', tls=' . ($item->tls ? "true" : "false");
-                if (isset($tlsSettings->allowInsecure)) {
-                  $proxies .= ', skip-cert-verify=true';
-                }
+
+        foreach ($servers as $item) {
+            if ($item['type'] === 'shadowsocks') {
+                // [Proxy]
+                $proxies .= Surge::buildShadowsocks($user['uuid'], $item);
+                // [Proxy Group]
+                $proxyGroup .= $item['name'] . ', ';
             }
-            if ($item->network == 'ws') {
-                $proxies .= ', ws=true';
-                if ($item->networkSettings) {
-                    $wsSettings = json_decode($item->networkSettings);
-                    if (isset($wsSettings->path)) $proxies .= ', ws-path=' . $wsSettings->path;
-                    if (isset($wsSettings->headers->Host)) $proxies .= ', ws-headers=host:' . $wsSettings->headers->Host;
-                }
+            if ($item['type'] === 'v2ray') {
+                // [Proxy]
+                $proxies .= Surge::buildVmess($user['uuid'], $item);
+                // [Proxy Group]
+                $proxyGroup .= $item['name'] . ', ';
             }
-            $proxies .= "\r\n";
-            // [Proxy Group]
-            $proxyGroup .= $item->name . ', ';
+            if ($item['type'] === 'trojan') {
+                // [Proxy]
+                $proxies .= Surge::buildTrojan($user['uuid'], $item);
+                // [Proxy Group]
+                $proxyGroup .= $item['name'] . ', ';
+            }
         }
 
-        try {
-            $rules = '';
-            foreach (glob(base_path() . '/resources/rules/' . '*.surge.conf') as $file) {
-                $rules = file_get_contents("$file");
-            }
-        } catch (\Exception $e) {}
+        $defaultConfig = base_path() . '/resources/rules/default.surge.conf';
+        $customConfig = base_path() . '/resources/rules/custom.surge.conf';
+        if (\File::exists($customConfig)) {
+            $config = file_get_contents("$customConfig");
+        } else {
+            $config = file_get_contents("$defaultConfig");
+        }
 
         // Subscription link
-        $subsURL = 'http';
-        if (isset( $_SERVER['HTTPS'] ) && strtolower( $_SERVER['HTTPS'] ) == 'on') {
-            $subsURL .= 's';
-        }
-        $subsURL .= '://';
-        if ($_SERVER['SERVER_PORT'] != ('80' || '443')) {
-            $subsURL .= $_SERVER['SERVER_NAME'] . ':' . $_SERVER['SERVER_PORT'] . $_SERVER['REQUEST_URI'];
-        } else {
-            $subsURL .= $_SERVER['SERVER_NAME'] . $_SERVER['REQUEST_URI'];
-        }
+        $subsURL = config('v2board.subscribe_url', config('v2board.app_url', env('APP_URL'))) . '/api/v1/client/subscribe?token=' . $user['token'];
 
-        $rules = str_replace('{subs_link}',$subsURL,$rules);
-        $rules = str_replace('{proxies}',$proxies,$rules);
-        $rules = str_replace('{proxy_group}',rtrim($proxyGroup, ', '),$rules);
-        return $rules;
+        $config = str_replace('$subs_link', $subsURL, $config);
+        $config = str_replace('$proxies', $proxies, $config);
+        $config = str_replace('$proxy_group', rtrim($proxyGroup, ', '), $config);
+        return $config;
     }
 
-    private function clash($user, $server)
+    private function surfboard($user, $servers = [])
     {
-        $proxy = [];
-        $proxyGroup = [];
-        $proxies = [];
-        $rules = [];
-        foreach ($server as $item) {
-            $array = [];
-            $array['name'] = $item->name;
-            $array['type'] = 'vmess';
-            $array['server'] = $item->host;
-            $array['port'] = $item->port;
-            $array['uuid'] = $user->v2ray_uuid;
-            $array['alterId'] = $user->v2ray_alter_id;
-            $array['cipher'] = 'auto';
-            if ($item->tls) {
-                $array['tls'] = true;
-                $array['skip-cert-verify'] = true;
+        $proxies = '';
+        $proxyGroup = '';
+
+        foreach ($servers as $item) {
+            if ($item['type'] === 'shadowsocks') {
+                // [Proxy]
+                $proxies .= Surfboard::buildShadowsocks($user['uuid'], $item);
+                // [Proxy Group]
+                $proxyGroup .= $item['name'] . ', ';
             }
-            if ($item->network == 'ws') {
-                $array['network'] = $item->network;
-                if ($item->networkSettings) {
-                    $wsSettings = json_decode($item->networkSettings);
-                    if (isset($wsSettings->path)) $array['ws-path'] = $wsSettings->path;
-                    if (isset($wsSettings->headers->Host)) $array['ws-headers'] = [
-                        'Host' => $wsSettings->headers->Host
-                    ];
-                }
+            if ($item['type'] === 'v2ray') {
+                // [Proxy]
+                $proxies .= Surfboard::buildVmess($user['uuid'], $item);
+                // [Proxy Group]
+                $proxyGroup .= $item['name'] . ', ';
             }
-            array_push($proxy, $array);
-            array_push($proxies, $item->name);
         }
 
-        array_push($proxyGroup, [
-            'name' => 'auto',
-            'type' => 'url-test',
-            'proxies' => $proxies,
-            'url' => 'https://www.bing.com',
-            'interval' => 300
-        ]);
-        array_push($proxyGroup, [
-            'name' => 'fallback-auto',
-            'type' => 'fallback',
-            'proxies' => $proxies,
-            'url' => 'https://www.bing.com',
-            'interval' => 300
-        ]);
-        array_push($proxyGroup, [
-            'name' => 'select',
-            'type' => 'select',
-            'proxies' => array_merge($proxies, [
-                'auto',
-                'fallback-auto'
-            ])
-        ]);
+        $defaultConfig = base_path() . '/resources/rules/default.surfboard.conf';
+        $customConfig = base_path() . '/resources/rules/custom.surfboard.conf';
+        if (\File::exists($customConfig)) {
+            $config = file_get_contents("$customConfig");
+        } else {
+            $config = file_get_contents("$defaultConfig");
+        }
 
-        try {
-            $rules = [];
-            foreach (glob(base_path() . '/resources/rules/' . '*.clash.yaml') as $file) {
-                $rules = array_merge($rules, Yaml::parseFile($file)['Rule']);
+        // Subscription link
+        $subsURL = config('v2board.subscribe_url', config('v2board.app_url', env('APP_URL'))) . '/api/v1/client/subscribe?token=' . $user['token'];
+
+        $config = str_replace('$subs_link', $subsURL, $config);
+        $config = str_replace('$proxies', $proxies, $config);
+        $config = str_replace('$proxy_group', rtrim($proxyGroup, ', '), $config);
+        return $config;
+    }
+
+    private function clash($user, $servers = [])
+    {
+        $defaultConfig = base_path() . '/resources/rules/default.clash.yaml';
+        $customConfig = base_path() . '/resources/rules/custom.clash.yaml';
+        if (\File::exists($customConfig)) {
+            $config = Yaml::parseFile($customConfig);
+        } else {
+            $config = Yaml::parseFile($defaultConfig);
+        }
+        $proxy = [];
+        $proxies = [];
+
+        foreach ($servers as $item) {
+            if ($item['type'] === 'shadowsocks') {
+                array_push($proxy, Clash::buildShadowsocks($user['uuid'], $item));
+                array_push($proxies, $item['name']);
             }
-        } catch (\Exception $e) {}
+            if ($item['type'] === 'v2ray') {
+                array_push($proxy, Clash::buildVmess($user['uuid'], $item));
+                array_push($proxies, $item['name']);
+            }
+            if ($item['type'] === 'trojan') {
+                array_push($proxy, Clash::buildTrojan($user['uuid'], $item));
+                array_push($proxies, $item['name']);
+            }
+        }
 
-        $config = [
-            'port' => 7890,
-            'socks-port' => 7891,
-            'allow-lan' => false,
-            'mode' => 'Rule',
-            'log-level' => 'info',
-            'external-controller' => '0.0.0.0:9090',
-            'secret' => '',
-            'Proxy' => $proxy,
-            'Proxy Group' => $proxyGroup,
-            'Rule' => $rules
-        ];
-
-        return Yaml::dump($config);
+        $config['proxies'] = array_merge($config['proxies'] ? $config['proxies'] : [], $proxy);
+        foreach ($config['proxy-groups'] as $k => $v) {
+            if (!is_array($config['proxy-groups'][$k]['proxies'])) continue;
+            $config['proxy-groups'][$k]['proxies'] = array_merge($config['proxy-groups'][$k]['proxies'], $proxies);
+        }
+        $yaml = Yaml::dump($config);
+        $yaml = str_replace('$app_name', config('v2board.app_name', 'V2Board'), $yaml);
+        return $yaml;
     }
 }

@@ -19,7 +19,9 @@ class CouponSave extends FormRequest
             'value' => 'required|integer',
             'started_at' => 'required|integer',
             'ended_at' => 'required|integer',
-            'limit_use' => 'nullable|integer'
+            'limit_use' => 'nullable|integer',
+            'limit_plan_ids' => 'nullable|array',
+            'code' => ''
         ];
     }
 
@@ -35,7 +37,8 @@ class CouponSave extends FormRequest
             'started_at.integer' => '开始时间格式有误',
             'ended_at.required' => '结束时间不能为空',
             'ended_at.integer' => '结束时间格式有误',
-            'limit_use.integer' => '使用次数格式有误'
+            'limit_use.integer' => '使用次数格式有误',
+            'limit_plan_ids.array' => '指定订阅格式有误'
         ];
     }
 }

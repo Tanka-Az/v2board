@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Models\Order;
+use App\Models\Server;
 use App\Models\User;
 
 class UserService
@@ -60,6 +62,47 @@ class UserService
         }
         if (!$user->save()) {
             return false;
+        }
+        return true;
+    }
+
+    public function isNotCompleteOrderByUserId(int $userId):bool
+    {
+        $order = Order::whereIn('status', [0, 1])
+            ->where('user_id', $userId)
+            ->first();
+        if (!$order) {
+            return false;
+        }
+        return true;
+    }
+
+    public function trafficFetch(int $u, int $d, int $userId, object $server, string $protocol):bool
+    {
+        $user = User::lockForUpdate()
+            ->find($userId);
+        if (!$user) {
+            return true;
+        }
+        $user->t = time();
+        $user->u = $user->u + $u;
+        $user->d = $user->d + $d;
+        if (!$user->save()) {
+            return false;
+        }
+        $mailService = new MailService();
+        $serverService = new ServerService();
+        try {
+            $mailService->remindTraffic($user);
+            $serverService->log(
+                $userId,
+                $server->id,
+                $u,
+                $d,
+                $server->rate,
+                $protocol
+            );
+        } catch (\Exception $e) {
         }
         return true;
     }

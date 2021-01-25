@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Jobs\SendEmailJob;
+use App\Services\TicketService;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use App\Models\Ticket;
+use App\Models\User;
 use App\Models\TicketMessage;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class TicketController extends Controller
@@ -30,17 +34,25 @@ class TicketController extends Controller
                 'data' => $ticket
             ]);
         }
-        $ticket = Ticket::orderBy('created_at', 'DESC')
+        $current = $request->input('current') ? $request->input('current') : 1;
+        $pageSize = $request->input('pageSize') >= 10 ? $request->input('pageSize') : 10;
+        $model = Ticket::orderBy('created_at', 'DESC');
+        if ($request->input('status') !== NULL) {
+            $model->where('status', $request->input('status'));
+        }
+        $total = $model->count();
+        $res = $model->forPage($current, $pageSize)
             ->get();
-        for ($i = 0; $i < count($ticket); $i++) {
-            if ($ticket[$i]['last_reply_user_id'] == $request->session()->get('id')) {
-                $ticket[$i]['reply_status'] = 0;
+        for ($i = 0; $i < count($res); $i++) {
+            if ($res[$i]['last_reply_user_id'] == $request->session()->get('id')) {
+                $res[$i]['reply_status'] = 0;
             } else {
-                $ticket[$i]['reply_status'] = 1;
+                $res[$i]['reply_status'] = 1;
             }
         }
         return response([
-            'data' => $ticket
+            'data' => $res,
+            'total' => $total
         ]);
     }
 
@@ -52,26 +64,12 @@ class TicketController extends Controller
         if (empty($request->input('message'))) {
             abort(500, '消息不能为空');
         }
-        $ticket = Ticket::where('id', $request->input('id'))
-            ->first();
-        if (!$ticket) {
-            abort(500, '工单不存在');
-        }
-        if ($ticket->status) {
-            abort(500, '工单已关闭，无法回复');
-        }
-        DB::beginTransaction();
-        $ticketMessage = TicketMessage::create([
-            'user_id' => $request->session()->get('id'),
-            'ticket_id' => $ticket->id,
-            'message' => $request->input('message')
-        ]);
-        $ticket->last_reply_user_id = $request->session()->get('id');
-        if (!$ticketMessage || !$ticket->save()) {
-            DB::rollback();
-            abort(500, '工单回复失败');
-        }
-        DB::commit();
+        $ticketService = new TicketService();
+        $ticketService->replyByAdmin(
+            $request->input('id'),
+            $request->input('message'),
+            $request->session()->get('id')
+        );
         return response([
             'data' => true
         ]);

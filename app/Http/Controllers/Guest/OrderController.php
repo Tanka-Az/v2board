@@ -2,14 +2,17 @@
 
 namespace App\Http\Controllers\Guest;
 
+use App\Services\OrderService;
+use App\Services\TelegramService;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use Library\Epay;
 use Omnipay\Omnipay;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
 use Library\BitpayX;
-use Library\PayTaro;
+use Library\MGate;
 
 class OrderController extends Controller
 {
@@ -66,22 +69,26 @@ class OrderController extends Controller
         }
         switch ($event->type) {
             case 'source.chargeable':
-                $source = $event->data->object;
-                $charge = \Stripe\Charge::create([
-                    'amount' => $source['amount'],
-                    'currency' => $source['currency'],
-                    'source' => $source['id'],
-                    'description' => config('v2board.app_name', 'V2Board') . $source['metadata']['invoice_id'],
+                $object = $event->data->object;
+                \Stripe\Charge::create([
+                    'amount' => $object->amount,
+                    'currency' => $object->currency,
+                    'source' => $object->id,
+                    'metadata' => json_decode($object->metadata, true)
                 ]);
-                if ($charge['status'] == 'succeeded') {
-                    $trade_no = Cache::get($source['id']);
-                    if (!$trade_no) {
-                        abort(500, 'redis is not found trade no by stripe source id');
+                die('success');
+                break;
+            case 'charge.succeeded':
+                $object = $event->data->object;
+                if ($object->status === 'succeeded') {
+                    $metaData = isset($object->metadata->out_trade_no) ? $object->metadata : $object->source->metadata;
+                    $tradeNo = $metaData->out_trade_no;
+                    if (!$tradeNo) {
+                        abort(500, 'trade no is not found in metadata');
                     }
-                    if (!$this->handle($trade_no, $source['id'])) {
+                    if (!$this->handle($tradeNo, $object->balance_transaction)) {
                         abort(500, 'fail');
                     }
-                    Cache::forget($source['id']);
                     die('success');
                 }
                 break;
@@ -123,12 +130,22 @@ class OrderController extends Controller
         ]));
     }
 
-    public function payTaroNotify(Request $request)
+    public function mgateNotify(Request $request)
     {
-        // Log::info('payTaroNotify: ' . json_encode($request->input()));
+        $mgate = new MGate(config('v2board.mgate_url'), config('v2board.mgate_app_id'), config('v2board.mgate_app_secret'));
+        if (!$mgate->verify($request->input())) {
+            abort(500, 'fail');
+        }
+        if (!$this->handle($request->input('out_trade_no'), $request->input('trade_no'))) {
+            abort(500, 'fail');
+        }
+        die('success');
+    }
 
-        $payTaro = new PayTaro(config('v2board.paytaro_app_id'), config('v2board.paytaro_app_secret'));
-        if (!$payTaro->verify($request->input())) {
+    public function epayNotify(Request $request)
+    {
+        $epay = new Epay(config('v2board.epay_url'), config('v2board.epay_pid'), config('v2board.epay_key'));
+        if (!$epay->verify($request->input())) {
             abort(500, 'fail');
         }
         if (!$this->handle($request->input('out_trade_no'), $request->input('trade_no'))) {
@@ -140,14 +157,21 @@ class OrderController extends Controller
     private function handle($tradeNo, $callbackNo)
     {
         $order = Order::where('trade_no', $tradeNo)->first();
+        if ($order->status === 1) return true;
         if (!$order) {
             abort(500, 'order is not found');
         }
-        if ($order->status !== 0) {
-            return true;
+        $orderService = new OrderService($order);
+        if (!$orderService->success($callbackNo)) {
+            return false;
         }
-        $order->status = 1;
-        $order->callback_no = $callbackNo;
-        return $order->save();
+        $telegramService = new TelegramService();
+        $message = sprintf(
+            "💰成功收款%s元\n———————————————\n订单号：%s",
+            $order->total_amount / 100,
+            $order->trade_no
+        );
+        $telegramService->sendMessageWithAdmin($message);
+        return true;
     }
 }

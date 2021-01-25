@@ -4,22 +4,22 @@ namespace App\Http\Controllers\User;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\User\OrderSave;
+use App\Services\CouponService;
 use App\Services\OrderService;
 use App\Services\UserService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
 use App\Models\Order;
 use App\Models\Plan;
 use App\Models\User;
-use App\Models\Coupon;
 use App\Utils\Helper;
 use Omnipay\Omnipay;
 use Stripe\Stripe;
 use Stripe\Source;
 use Library\BitpayX;
-use Library\PayTaro;
+use Library\MGate;
+use Library\Epay;
 
 class OrderController extends Controller
 {
@@ -62,64 +62,11 @@ class OrderController extends Controller
         ]);
     }
 
-    private function isNotCompleteOrderByUserId($userId)
-    {
-        $order = Order::whereIn('status', [0, 1])
-            ->where('user_id', $userId)
-            ->first();
-        if (!$order) {
-            return false;
-        }
-        return true;
-    }
-
-    // surplus value
-    private function getSurplusValue(User $user)
-    {
-        $plan = Plan::find($user->plan_id);
-        if ($user->expired_at === NULL) {
-            return $this->getSurplusValueByOneTime($user, $plan);
-        } else {
-            return $this->getSurplusValueByCycle($user, $plan);
-        }
-    }
-
-    private function getSurplusValueByOneTime(User $user, Plan $plan)
-    {
-        $trafficUnitPrice = $plan->onetime_price / $plan->transfer_enable;
-        if ($user->discount && $trafficUnitPrice) {
-            $trafficUnitPrice = $trafficUnitPrice - ($trafficUnitPrice * $user->discount / 100);
-        }
-        $notUsedTrafficPrice = $plan->transfer_enable - (($user->u + $user->d) / 1073741824);
-        $result = $trafficUnitPrice * $notUsedTrafficPrice;
-        return $result > 0 ? $result : 0;
-    }
-
-    private function getSurplusValueByCycle(User $user, Plan $plan)
-    {
-        $price = 0;
-        if ($plan->month_price) {
-            $price = $plan->month_price / (31536000 / 12);
-        } else if ($plan->quarter_price) {
-            $price = $plan->quarter_price / (31536000 / 4);
-        } else if ($plan->half_year_price) {
-            $price = $plan->half_year_price / (31536000 / 2);
-        } else if ($plan->year_price) {
-            $price = $plan->year_price / 31536000;
-        }
-        // exclude discount
-        if ($user->discount && $price) {
-            $price = $price - ($price * $user->discount / 100);
-        }
-        $remainingDay = $user->expired_at - time();
-        $result = $remainingDay * $price;
-        return $result > 0 ? $result : 0;
-    }
-
     public function save(OrderSave $request)
     {
-        if ($this->isNotCompleteOrderByUserId($request->session()->get('id'))) {
-            abort(500, '存在未付款订单，请取消后再试');
+        $userService = new UserService();
+        if ($userService->isNotCompleteOrderByUserId($request->session()->get('id'))) {
+            abort(500, '您有未付款或开通中的订单，请稍后或取消再试');
         }
 
         $plan = Plan::find($request->input('plan_id'));
@@ -130,10 +77,12 @@ class OrderController extends Controller
         }
 
         if ((!$plan->show && !$plan->renew) || (!$plan->show && $user->plan_id !== $plan->id)) {
-            abort(500, '该订阅已售罄');
+            if ($request->input('cycle') !== 'reset_price') {
+                abort(500, '该订阅已售罄，请更换其他订阅');
+            }
         }
 
-        if (!$plan->renew && $user->plan_id == $plan->id) {
+        if (!$plan->renew && $user->plan_id == $plan->id && $request->input('cycle') !== 'reset_price') {
             abort(500, '该订阅无法续费，请更换其他订阅');
         }
 
@@ -141,84 +90,38 @@ class OrderController extends Controller
             abort(500, '该订阅周期无法进行购买，请选择其他周期');
         }
 
-        if ($request->input('coupon_code')) {
-            $coupon = Coupon::where('code', $request->input('coupon_code'))->first();
-            if (!$coupon) {
-                abort(500, '优惠券无效');
+        if ($request->input('cycle') === 'reset_price') {
+            if ($user->expired_at <= time() || !$user->plan_id) {
+                abort(500, '订阅已过期或无有效订阅，无法购买重置包');
             }
-            if ($coupon->limit_use <= 0 && $coupon->limit_use !== NULL) {
-                abort(500, '优惠券已无可用次数');
-            }
-            if (time() < $coupon->started_at) {
-                abort(500, '优惠券还未到可用时间');
-            }
-            if (time() > $coupon->ended_at) {
-                abort(500, '优惠券已过期');
-            }
+        }
+
+        if (!$plan->show && $plan->renew && !$userService->isAvailable($user)) {
+            abort(500, '订阅已过期，请更换其他订阅');
         }
 
         DB::beginTransaction();
         $order = new Order();
+        $orderService = new OrderService($order);
         $order->user_id = $request->session()->get('id');
         $order->plan_id = $plan->id;
         $order->cycle = $request->input('cycle');
         $order->trade_no = Helper::guid();
         $order->total_amount = $plan[$request->input('cycle')];
-        // coupon start
-        if (isset($coupon)) {
-            switch ($coupon->type) {
-                case 1:
-                    $order->discount_amount = $coupon->value;
-                    break;
-                case 2:
-                    $order->discount_amount = $order->total_amount * ($coupon->value / 100);
-                    break;
+
+        if ($request->input('coupon_code')) {
+            $couponService = new CouponService($request->input('coupon_code'));
+            if (!$couponService->use($order)) {
+                DB::rollBack();
+                abort(500, '优惠券使用失败');
             }
-            if ($coupon->limit_use !== NULL) {
-                $coupon->limit_use = $coupon->limit_use - 1;
-                if (!$coupon->save()) {
-                    DB::rollback();
-                    abort(500, '优惠券使用失败');
-                }
-            }
+            $order->coupon_id = $couponService->getId();
         }
-        // coupon complete
-        // discount start
-        if ($user->discount) {
-            $order->discount_amount = $order->discount_amount + ($order->total_amount * ($user->discount / 100));
-        }
-        // discount end
-        $order->total_amount = $order->total_amount - $order->discount_amount;
-        // renew and change subscribe process
-        if ($user->plan_id !== NULL && $order->plan_id !== $user->plan_id) {
-            if (!(int)config('v2board.plan_change_enable', 1)) abort(500, '目前不允许更改订阅，请联系客服或提交工单');
-            $order->type = 3;
-            $order->surplus_amount = $this->getSurplusValue($user);
-            if ($order->surplus_amount >= $order->total_amount) {
-                $order->refund_amount = $order->surplus_amount - $order->total_amount;
-                $order->total_amount = 0;
-            } else {
-                $order->total_amount = $order->total_amount - $order->surplus_amount;
-            }
-        } else if ($user->expired_at > time() && $order->plan_id == $user->plan_id) {
-            $order->type = 2;
-        } else {
-            $order->type = 1;
-        }
-        // invite process
-        if ($user->invite_user_id && $order->total_amount > 0) {
-            $order->invite_user_id = $user->invite_user_id;
-            $commissionFirstTime = (int)config('v2board.commission_first_time_enable', 1);
-            if (!$commissionFirstTime || ($commissionFirstTime && !Order::where('user_id', $user->id)->where('status', 3)->first())) {
-                $inviter = User::find($user->invite_user_id);
-                if ($inviter && $inviter->commission_rate) {
-                    $order->commission_balance = $order->total_amount * ($inviter->commission_rate / 100);
-                } else {
-                    $order->commission_balance = $order->total_amount * (config('v2board.invite_commission', 10) / 100);
-                }
-            }
-        }
-        // use balance
+
+        $orderService->setVipDiscount($user);
+        $orderService->setOrderType($user);
+        $orderService->setInvite($user);
+
         if ($user->balance && $order->total_amount > 0) {
             $remainingBalance = $user->balance - $order->total_amount;
             $userService = new UserService();
@@ -267,10 +170,13 @@ class OrderController extends Controller
             $order->total_amount = 0;
             $order->status = 1;
             $order->save();
-            exit();
+            return response([
+                'type' => -1,
+                'data' => true
+            ]);
         }
         switch ($method) {
-            // return type => 0: QRCode / 1: URL
+            // return type => 0: QRCode / 1: URL / 2: No action
             case 0:
                 // alipayF2F
                 if (!(int)config('v2board.alipay_enable')) {
@@ -308,12 +214,28 @@ class OrderController extends Controller
                     'data' => $this->bitpayX($order)
                 ]);
             case 5:
-                if (!(int)config('v2board.paytaro_enable')) {
+                if (!(int)config('v2board.mgate_enable')) {
                     abort(500, '支付方式不可用');
                 }
                 return response([
                     'type' => 1,
-                    'data' => $this->payTaro($order)
+                    'data' => $this->mgate($order)
+                ]);
+            case 6:
+                if (!(int)config('v2board.stripe_card_enable')) {
+                    abort(500, '支付方式不可用');
+                }
+                return response([
+                    'type' => 2,
+                    'data' => $this->stripeCard($order, $request->input('token'))
+                ]);
+            case 7:
+                if (!(int)config('v2board.epay_enable')) {
+                    abort(500, '支付方式不可用');
+                }
+                return response([
+                    'type' => 1,
+                    'data' => $this->epay($order)
                 ]);
             default:
                 abort(500, '支付方式不存在');
@@ -363,16 +285,32 @@ class OrderController extends Controller
 
         if ((int)config('v2board.bitpayx_enable')) {
             $bitpayX = new \StdClass();
-            $bitpayX->name = '聚合支付';
+            $bitpayX->name = config('v2board.bitpayx_name', '在线支付');
             $bitpayX->method = 4;
             $bitpayX->icon = 'wallet';
             array_push($data, $bitpayX);
         }
 
-        if ((int)config('v2board.paytaro_enable')) {
+        if ((int)config('v2board.mgate_enable')) {
             $obj = new \StdClass();
-            $obj->name = '聚合支付';
+            $obj->name = config('v2board.mgate_name', '在线支付');
             $obj->method = 5;
+            $obj->icon = 'wallet';
+            array_push($data, $obj);
+        }
+
+        if ((int)config('v2board.stripe_card_enable')) {
+            $obj = new \StdClass();
+            $obj->name = '信用卡';
+            $obj->method = 6;
+            $obj->icon = 'card';
+            array_push($data, $obj);
+        }
+
+        if ((int)config('v2board.epay_enable')) {
+            $obj = new \StdClass();
+            $obj->name = config('v2board.epay_name', '在线支付');
+            $obj->method = 7;
             $obj->icon = 'wallet';
             array_push($data, $obj);
         }
@@ -444,7 +382,7 @@ class OrderController extends Controller
             'statement_descriptor' => $order->trade_no,
             'metadata' => [
                 'user_id' => $order->user_id,
-                'invoice_id' => $order->trade_no,
+                'out_trade_no' => $order->trade_no,
                 'identifier' => ''
             ],
             'redirect' => [
@@ -453,10 +391,6 @@ class OrderController extends Controller
         ]);
         if (!$source['redirect']['url']) {
             abort(500, '支付网关请求失败');
-        }
-
-        if (!Cache::put($source['id'], $order->trade_no, 3600)) {
-            abort(500, '订单创建失败');
         }
         return $source['redirect']['url'];
     }
@@ -475,7 +409,7 @@ class OrderController extends Controller
             'type' => 'wechat',
             'metadata' => [
                 'user_id' => $order->user_id,
-                'invoice_id' => $order->trade_no,
+                'out_trade_no' => $order->trade_no,
                 'identifier' => ''
             ],
             'redirect' => [
@@ -485,10 +419,36 @@ class OrderController extends Controller
         if (!$source['wechat']['qr_code_url']) {
             abort(500, '支付网关请求失败');
         }
-        if (!Cache::put($source['id'], $order->trade_no, 3600)) {
-            abort(500, '订单创建失败');
-        }
         return $source['wechat']['qr_code_url'];
+    }
+
+    private function stripeCard($order, string $token)
+    {
+        $currency = config('v2board.stripe_currency', 'hkd');
+        $exchange = Helper::exchange('CNY', strtoupper($currency));
+        if (!$exchange) {
+            abort(500, '货币转换超时，请稍后再试');
+        }
+        Stripe::setApiKey(config('v2board.stripe_sk_live'));
+        try {
+            $charge = \Stripe\Charge::create([
+                'amount' => floor($order->total_amount * $exchange),
+                'currency' => $currency,
+                'source' => $token,
+                'metadata' => [
+                    'user_id' => $order->user_id,
+                    'out_trade_no' => $order->trade_no,
+                    'identifier' => ''
+                ]
+            ]);
+        } catch (\Exception $e) {
+            abort(500, '遇到了点问题，请刷新页面稍后再试');
+        }
+        info($charge);
+        if (!$charge->paid) {
+            abort(500, '扣款失败，请检查信用卡信息');
+        }
+        return $charge->paid;
     }
 
     private function bitpayX($order)
@@ -511,16 +471,28 @@ class OrderController extends Controller
         return isset($result['payment_url']) ? $result['payment_url'] : false;
     }
 
-    private function payTaro($order)
+    private function mgate($order)
     {
-        $payTaro = new PayTaro(config('v2board.paytaro_app_id'), config('v2board.paytaro_app_secret'));
-        $result = $payTaro->pay([
-            'app_id' => config('v2board.paytaro_app_id'),
+        $mgate = new MGate(config('v2board.mgate_url'), config('v2board.mgate_app_id'), config('v2board.mgate_app_secret'));
+        $result = $mgate->pay([
+            'app_id' => config('v2board.mgate_app_id'),
             'out_trade_no' => $order->trade_no,
             'total_amount' => $order->total_amount,
-            'notify_url' => url('/api/v1/guest/order/payTaroNotify'),
+            'notify_url' => url('/api/v1/guest/order/mgateNotify'),
             'return_url' => config('v2board.app_url', env('APP_URL')) . '/#/order'
         ]);
         return $result;
+    }
+
+    private function epay($order)
+    {
+        $epay = new Epay(config('v2board.epay_url'), config('v2board.epay_pid'), config('v2board.epay_key'));
+        return $epay->pay([
+            'money' => $order->total_amount / 100,
+            'name' => $order->trade_no,
+            'notify_url' => url('/api/v1/guest/order/epayNotify'),
+            'return_url' => config('v2board.app_url', env('APP_URL')) . '/#/order',
+            'out_trade_no' => $order->trade_no
+        ]);
     }
 }

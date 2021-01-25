@@ -2,7 +2,7 @@
 <html>
 
 <head>
-    <link rel="stylesheet" href="/assets/user/antd.chunk.css?v={{$verison}}">
+    <link rel="stylesheet" href="/assets/user/components.chunk.css?v={{$verison}}">
     <link rel="stylesheet" href="/assets/user/umi.css?v={{$verison}}">
     <link rel="stylesheet" href="/assets/user/custom.css?v={{$verison}}">
     <meta charset="utf-8">
@@ -11,7 +11,7 @@
     <!-- <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Nunito+Sans:300,400,400i,600,700"> -->
     <script>window.routerBase = "/";</script>
     <script>
-        window.v2board = {
+        window.settings = {
             title: '{{$title}}',
             theme: {
                 sidebar: '{{$theme_sidebar}}',
@@ -28,7 +28,7 @@
 <body>
 <div id="root"></div>
 <script src="/assets/user/vendors.async.js?v={{$verison}}"></script>
-<script src="/assets/user/antd.async.js?v={{$verison}}"></script>
+<script src="/assets/user/components.async.js?v={{$verison}}"></script>
 <script src="/assets/user/umi.js?v={{$verison}}"></script>
 <!-- Global site tag (gtag.js) - Google Analytics -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-P1E9Z5LRRK"></script>

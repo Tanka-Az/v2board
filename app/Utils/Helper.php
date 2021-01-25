@@ -3,6 +3,8 @@
 namespace App\Utils;
 
 use App\Models\Server;
+use App\Models\ServerShadowsocks;
+use App\Models\ServerTrojan;
 use App\Models\User;
 
 class Helper
@@ -56,29 +58,6 @@ class Helper
         return $str;
     }
 
-    public static function buildVmessLink(Server $server, User $user)
-    {
-        $config = [
-            "v" => "2",
-            "ps" => $server->name,
-            "add" => $server->host,
-            "port" => $server->port,
-            "id" => $user->v2ray_uuid,
-            "aid" => "2",
-            "net" => $server->network,
-            "type" => "none",
-            "host" => "",
-            "path" => "",
-            "tls" => $server->tls ? "tls" : ""
-        ];
-        if ((string)$server->network === 'ws') {
-            $wsSettings = json_decode($server->networkSettings);
-            if (isset($wsSettings->path)) $config['path'] = $wsSettings->path;
-            if (isset($wsSettings->headers->Host)) $config['host'] = $wsSettings->headers->Host;
-        }
-        return "vmess://" . base64_encode(json_encode($config)) . "\r\n";
-    }
-
     public static function multiPasswordVerify($algo, $password, $hash)
     {
         switch($algo) {
@@ -97,5 +76,23 @@ class Helper
         }
         if (!in_array($suffix, $suffixs)) return false;
         return true;
+    }
+
+    public static function trafficConvert(int $byte)
+    {
+        $kb = 1024;
+        $mb = 1048576;
+        $gb = 1073741824;
+        if ($byte > $gb) {
+            return round($byte / $gb, 2) . ' GB';
+        } else if ($byte > $mb) {
+            return round($byte / $mb, 2) . ' MB';
+        } else if ($byte > $kb) {
+            return round($byte / $kb, 2) . ' KB';
+        } else if ($byte < 0) {
+            return 0;
+        } else {
+            return round($byte, 2) . ' B';
+        }
     }
 }
